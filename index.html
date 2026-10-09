@@ -10,8 +10,7 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://www.kr8digital.com/">
 <meta name="theme-color" content="#08080a">
-<link rel="preload" as="image" href="frames-desktop/f_001.webp" media="(min-width: 801px)">
-<link rel="preload" as="image" href="frames-mobile/f_001.webp" media="(max-width: 800px)">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Michroma&family=Inter+Tight:wght@300;400;500&display=swap" rel="stylesheet">
@@ -223,62 +222,99 @@ footer{padding:36px var(--pad) calc(36px + env(safe-area-inset-bottom,0px));bord
 <footer><span>© 2026 Kr8 Digital</span><span>Design &amp; Engineering Studio</span></footer>
 
 <script>
-const FRAMES = (() => {
-  const big = Math.max(innerWidth, innerHeight) * Math.min(devicePixelRatio || 1, 2) > 1600;
-  const set = big ? 'desktop' : 'mobile';
-  return Array.from({ length: 96 }, (_, i) => `frames-${set}/f_${String(i + 1).padStart(3, '0')}.webp`);
-})();
 (function(){
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const hero = document.querySelector('.hero');
   const canvas = document.getElementById('film');
   const ctx = canvas.getContext('2d', { alpha: false });
-  const bg = document.querySelector('.l-bg');
-  const film = document.querySelector('.l-film');
+  const bg = document.querySelector('.l-bg'), film = document.querySelector('.l-film');
   const b1 = document.querySelector('.beat-1'), b2 = document.querySelector('.beat-2');
   const cue = document.querySelector('.scrollcue'), pct = document.getElementById('pct');
   const loader = document.getElementById('loader');
-  const N = FRAMES.length;
-  const imgs = new Array(N);
-  let loaded = 0, target = 0, current = 0, last = -1, W = 0, H = 0;
+  const BG = '#08080a', N = 96, ZOOM = 0.05;
+  const SRC_AR = 3840 / 2148;
+  // Where the logo sits in the footage (fractions of the frame, measured from the last frame, its largest)
+  const LOGO = { x0: 0.20, x1: 0.815, y0: 0.43, y1: 0.83, cx: 0.5075, cy: 0.63 };
 
-  // decode frames
-  FRAMES.forEach((src, i) => {
-    const im = new Image();
-    im.decoding = 'async';
-    im.onload = () => { loaded++; if (i === (reduce ? N - 1 : 0)) { draw(true); loader.classList.add('done'); } };
-    im.src = src; imgs[i] = im;
-  });
+  let W = 0, H = 0, DPR = 1, imgs = [], target = 0, current = 0, lastKey = '';
+
+  // Placement of a frame of size iw x ih for a given zoom z, in CSS pixels
+  function place(iw, ih, z){
+    const ar = W / H, lw = (LOGO.x1 - LOGO.x0) * iw, lh = (LOGO.y1 - LOGO.y0) * ih;
+    let s0, py;
+    if (ar >= 1.2) {   // desktop / landscape: logo sized to the window, sitting below the headline
+      s0 = Math.min(0.62 * W / lw, 0.36 * H / lh);
+      py = H * 0.70;
+    } else {           // portrait: logo spans most of the width, below the headline
+      s0 = Math.min(0.86 * W / lw, 0.30 * H / lh);
+      py = H * (ar < 0.75 ? 0.68 : 0.66);
+    }
+    const s = s0 * z, px = W / 2;      // push-in is scaled from the source, around the logo centre
+    return { s, dx: px - LOGO.cx * iw * s, dy: py - LOGO.cy * ih * s, dw: iw * s, dh: ih * s };
+  }
+
+  // Pick the smallest frame set that covers the device pixels actually drawn
+  function pickSet(){
+    const need = place(3840, 2148, 1 + ZOOM).dw * DPR;
+    const sets = [{w:1280,frames:Array.from({length:96},(_,i)=>`frames-1280/f_${String(i+1).padStart(3,'0')}.webp`)},{w:2560,frames:Array.from({length:96},(_,i)=>`frames-2560/f_${String(i+1).padStart(3,'0')}.webp`)},{w:3840,frames:Array.from({length:96},(_,i)=>`frames-3840/f_${String(i+1).padStart(3,'0')}.webp`)}];
+    return sets.find(x => x.w >= need * 0.98) || sets[sets.length - 1];
+  }
 
   function size(){
-    const dpr = Math.min(devicePixelRatio || 1, 2);
+    DPR = Math.min(devicePixelRatio || 1, 2);
     W = canvas.clientWidth; H = canvas.clientHeight;
-    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.imageSmoothingQuality = 'high';
-    draw(true);
+    canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    lastKey = ''; draw();
   }
-  function nearest(i){ // closest decoded frame
+
+  let currentSet = null;
+  function load(){
+    const set = pickSet();
+    if (currentSet && set.w <= currentSet.w) return;   // only ever upgrade
+    currentSet = set;
+    const next = new Array(N);
+    let first = true;
+    set.frames.forEach((src, i) => {
+      const im = new Image(); im.decoding = 'async';
+      im.onload = () => { next[i] = im; if (first && i === (reduce ? N - 1 : Math.round(current))) { first = false; } lastKey = ''; draw(); loader.classList.add('done'); };
+      im.src = src;
+    });
+    imgs = next;
+  }
+  let prev = [];
+  function frameAt(i){
     for (let d = 0; d < N; d++) {
-      const a = imgs[i - d], b = imgs[i + d];
-      if (a && a.complete && a.naturalWidth) return a;
-      if (b && b.complete && b.naturalWidth) return b;
+      const a = imgs[i - d] || prev[i - d], b = imgs[i + d] || prev[i + d];
+      if (a) return a; if (b) return b;
     }
     return null;
   }
-  function draw(force){
+
+  function draw(){
     const i = reduce ? N - 1 : Math.round(current);
-    if (!force && i === last) return;
-    const im = nearest(i); if (!im) return;
-    last = i;
-    const iw = im.naturalWidth, ih = im.naturalHeight, ar = W / H;
-    // landscape: cover. portrait: keep the logo readable by fitting ~60% of the frame width
-    let s = ar >= 1 ? Math.max(W / iw, H / ih) : (W * 1.65) / iw;
-    const dw = iw * s, dh = ih * s;
-    const dx = (W - dw) / 2, dy = ar >= 1 ? (H - dh) * 0.78 : H * 0.6 - dh / 2; // wide screens crop the empty top, not the logo
-    ctx.fillStyle = '#08080a'; ctx.fillRect(0, 0, W, H);
-    ctx.drawImage(im, dx, dy, dw, dh);
+    const q = current / (N - 1), z = reduce ? 1 + ZOOM : 1 + q * ZOOM;
+    const key = i + ':' + z.toFixed(4) + ':' + W + 'x' + H;
+    if (key === lastKey) return;
+    const im = frameAt(i); if (!im) return;
+    lastKey = key;
+    const p = place(im.naturalWidth, im.naturalHeight, z);
+    ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(im, p.dx, p.dy, p.dw, p.dh);
+    // wherever the frame stops short of the screen, dissolve that edge into the page
+    const fade = (x0, y0, x1, y1, w, h, rx, ry, rw, rh) => {
+      const g = ctx.createLinearGradient(x0, y0, x1, y1);
+      g.addColorStop(0, BG); g.addColorStop(1, 'rgba(8,8,10,0)');
+      ctx.fillStyle = g; ctx.fillRect(rx, ry, rw, rh);
+    };
+    const fx = p.dw * 0.16, fy = p.dh * 0.2;
+    if (p.dy > 0.5) fade(0, p.dy, 0, p.dy + fy, 0, 0, 0, p.dy - 1, W, fy + 1);
+    if (p.dy + p.dh < H - 0.5) fade(0, p.dy + p.dh, 0, p.dy + p.dh - fy, 0, 0, 0, p.dy + p.dh - fy, W, fy + 1);
+    if (p.dx > 0.5) fade(p.dx, 0, p.dx + fx, 0, 0, 0, p.dx - 1, 0, fx + 1, H);
+    if (p.dx + p.dw < W - 0.5) fade(p.dx + p.dw, 0, p.dx + p.dw - fx, 0, 0, 0, p.dx + p.dw - fx, 0, fx + 1, H);
   }
+
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const smooth = t => t * t * (3 - 2 * t);
   function progress(){
@@ -286,30 +322,28 @@ const FRAMES = (() => {
     return clamp(-r.top / (r.height - innerHeight), 0, 1);
   }
   function tick(){
-    const p = progress();
-    target = p * (N - 1);
+    target = progress() * (N - 1);
     current += (target - current) * 0.18;
     if (Math.abs(target - current) < 0.01) current = target;
-    draw(false);
+    draw();
     const q = current / (N - 1);
-    // three depth layers move at different rates
     bg.style.transform = `translate3d(0, ${-q * 6}%, 0) scale(${1.04 - q * 0.04})`;
-    film.style.transform = `translate3d(0, ${-q * 3}%, 0) scale(${1 + q * 0.05})`;
+    film.style.transform = `translate3d(0, ${-q * 3}%, 0)`;   // translate only: no bitmap scaling
     const o1 = 1 - smooth(clamp((q - 0.18) / 0.22, 0, 1));
     b1.style.opacity = o1; b1.style.transform = `translate3d(0, ${-q * 22}vh, 0)`;
-    const o2 = smooth(clamp((q - 0.58) / 0.2, 0, 1)) * (1 - smooth(clamp((q - 0.92) / 0.08, 0, 1)) * 0.0);
+    const o2 = smooth(clamp((q - 0.58) / 0.2, 0, 1));
     b2.style.opacity = o2; b2.style.transform = `translate3d(0, ${(1 - o2) * 6}vh, 0)`;
     b2.setAttribute('aria-hidden', o2 < 0.5);
     cue.style.opacity = 1 - clamp(q * 8, 0, 1);
     pct.textContent = String(Math.round(q * 100)).padStart(2, '0');
     requestAnimationFrame(tick);
   }
-  addEventListener('resize', size);
-  size();
+
+  let rt; addEventListener('resize', () => { size(); clearTimeout(rt); rt = setTimeout(() => { prev = imgs.slice(); load(); }, 300); });
+  size(); load();
   if (reduce) { b2.style.opacity = 0; cue.style.display = 'none'; }
   else requestAnimationFrame(tick);
 
-  // section reveals
   const io = new IntersectionObserver(es => es.forEach(e => {
     if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
   }), { rootMargin: '0px 0px -12% 0px' });
